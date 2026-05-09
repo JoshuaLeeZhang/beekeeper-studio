@@ -20,8 +20,8 @@ const bksErDiagramPath = path.dirname(require.resolve('@beekeeperstudio/bks-er-d
 
 
 module.exports = {
-  appId: "io.beekeeperstudio.desktop",
-  productName: "Beekeeper Studio",
+  appId: "io.dream.beekeeper-custom",
+  productName: "Dream Beekeeper",
   releaseInfo: {
     releaseNotesFile: "build/release-notes.md"
   },
