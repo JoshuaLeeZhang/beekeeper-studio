@@ -3,8 +3,8 @@ import _ from "lodash";
 import rawLog from "@bksLogger";
 import globals from '@/common/globals'
 import { LineGutter } from "../editor/utils";
-import { toRegexSafe } from "@/common/utils";
-import { Decoration, EditorView, WidgetType } from "@codemirror/view";
+import { toRegexSafe, typedArrayToString } from "@/common/utils";
+import { Decoration, WidgetType } from "@codemirror/view";
 
 export interface UpdateOptions {
   dataId: number | string;
@@ -97,6 +97,136 @@ export function findValueInfo(line: string) {
   const value = line.slice(from, to);
 
   return { from, to, value };
+}
+
+export interface JsonPointerPosition {
+  line: number;
+  column: number;
+}
+
+export interface JsonSourcePointerEntry {
+  value?: JsonPointerPosition;
+  valueEnd?: JsonPointerPosition;
+  key?: JsonPointerPosition;
+}
+
+export type JsonSourcePointers = Record<string, JsonSourcePointerEntry>;
+
+export interface ValueMarkerRange {
+  line: number;
+  from: number;
+  to: number;
+  value: string;
+}
+
+export interface CloneForJsonDisplayOptions {
+  binaryEncoding?: "hex" | "base64";
+  truncatedPaths?: string[];
+  maxTextLength?: number;
+}
+
+/** Clone row data for display without JSON.stringify/parse round-trips. */
+export function cloneForJsonDisplay(
+  value: Record<string, unknown>,
+  options: CloneForJsonDisplayOptions = {}
+): Record<string, unknown> {
+  const truncated = new Set(options.truncatedPaths ?? []);
+  const maxLen = options.maxTextLength ?? globals.maxDetailViewTextLength;
+  const encoding = options.binaryEncoding;
+
+  function transform(input: unknown, path: string): unknown {
+    if (
+      input &&
+      typeof input === "object" &&
+      !_.isTypedArray(input) &&
+      _.isTypedArray((input as { buffer?: unknown }).buffer)
+    ) {
+      return typedArrayToString(
+        (input as { buffer: ArrayBufferView }).buffer,
+        encoding
+      );
+    }
+    if (_.isTypedArray(input)) {
+      return typedArrayToString(input as ArrayBufferView, encoding);
+    }
+    if (typeof input === "string" && truncated.has(path)) {
+      return input.slice(0, maxLen);
+    }
+    if (Array.isArray(input)) {
+      return input.map((item, index) => {
+        const childPath = path ? `${path}.${index}` : String(index);
+        return transform(item, childPath);
+      });
+    }
+    if (_.isPlainObject(input)) {
+      const out: Record<string, unknown> = {};
+      for (const [key, val] of Object.entries(input)) {
+        const childPath = path ? `${path}.${key}` : key;
+        out[key] = transform(val, childPath);
+      }
+      return out;
+    }
+    return input;
+  }
+
+  return transform(value, "") as Record<string, unknown>;
+}
+
+export function getTruncatablePaths(
+  obj: Record<string, unknown>,
+  maxLength = globals.maxDetailViewTextLength
+) {
+  return getPaths(obj).filter((path) => {
+    const val = _.get(obj, path);
+    return typeof val === "string" && val.length > maxLength;
+  });
+}
+
+export function pointerValueRange(
+  pointers: JsonSourcePointers,
+  pointer: string,
+  jsonLines: string[]
+): ValueMarkerRange | null {
+  const entry = pointers[pointer];
+  if (!entry?.value || !entry?.valueEnd) {
+    return null;
+  }
+
+  const line = entry.value.line;
+  const from = entry.value.column;
+  const to =
+    entry.value.line === entry.valueEnd.line
+      ? entry.valueEnd.column
+      : (jsonLines[line]?.length ?? from);
+  const lineText = jsonLines[line] ?? "";
+  const value = lineText.slice(from, to);
+
+  return { line, from, to, value };
+}
+
+export function valueMarkerRange(
+  json: string,
+  path: (string | number)[],
+  pointers: JsonSourcePointers,
+  pointer: string
+): ValueMarkerRange | null {
+  const lines = json.split("\n");
+  const fromPointer = pointerValueRange(pointers, pointer, lines);
+  if (fromPointer) {
+    return fromPointer;
+  }
+
+  const line = findKeyPosition(json, path);
+  if (line === -1) {
+    return null;
+  }
+
+  const info = findValueInfo(lines[line]);
+  if (!info) {
+    return null;
+  }
+
+  return { line, ...info };
 }
 
 /** Remove all properties that don't contain the given filter */

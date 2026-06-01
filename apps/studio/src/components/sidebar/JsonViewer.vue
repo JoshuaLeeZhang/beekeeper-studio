@@ -50,7 +50,7 @@
         language-id="json"
         :fold-all="foldAll"
         :unfold-all="unfoldAll"
-        :value="text"
+        :value="cachedJson"
         :force-initialize="reinitializeTextEditor + (reinitialize ?? 0)"
         :markers="markers"
         :replace-extensions="replaceExtensions"
@@ -77,12 +77,13 @@ import TextEditor from "@beekeeperstudio/ui-kit/vue/text-editor"
 import {
   ExpandablePath,
   findKeyPosition,
-  findValueInfo,
   createExpandableTextDecoration,
   createTruncatableTextDecoration,
   deepFilterObjectProps,
-  getPaths,
-  eachPaths,
+  cloneForJsonDisplay,
+  getTruncatablePaths,
+  valueMarkerRange,
+  JsonSourcePointers,
 } from "@/lib/data/jsonViewer";
 import { mapGetters } from "vuex";
 import { EditorMarker, LineGutter } from "@beekeeperstudio/ui-kit";
@@ -90,10 +91,8 @@ import { persistJsonFold } from "@/lib/editor/extensions/persistJsonFold";
 import { partialReadonly } from "@/lib/editor/extensions/partialReadOnly";
 import rawLog from "@bksLogger";
 import _ from "lodash";
-import globals from '@/common/globals'
 import JsonSourceMap from "json-source-map";
 import JsonPointer from "json-pointer";
-import { typedArrayToString } from '@/common/utils'
 import { monokaiInit } from "@uiw/codemirror-theme-monokai";
 
 const log = rawLog.scope("json-viewer");
@@ -138,31 +137,66 @@ export default Vue.extend({
       restoredTruncatedPaths: [],
       editableRangeErrors: [],
       wrapText: false,
+      skipFoldPersist: false,
       persistJsonFold: persistJsonFold(),
       partialReadonly: partialReadonly(),
+      cacheKey: "",
+      cachedJson: "",
+      cachedPointers: {} as JsonSourcePointers,
+      cachedTruncatablePaths: [] as string[],
+      cachedEditableRanges: [] as Array<{
+        id: string;
+        from: { line: number; ch: number };
+        to: { line: number; ch: number };
+      }>,
+      sourceMapGeneration: 0,
     };
   },
   watch: {
     hidden() {
-      if (!this.hidden) this.reinitializeTextEditor++;
+      if (!this.hidden) {
+        this.reinitializeTextEditor++;
+        this.refreshJsonCache();
+      }
     },
     dataId() {
+      this.restoredTruncatedPaths = [];
+      this.skipFoldPersist = true;
+      this.refreshJsonCache();
       if (this.expandFKDetailsByDefault) {
         this.expandablePaths.forEach((expandablePath: ExpandablePath) => {
-          // Expand only the first level
           if (expandablePath.path.length === 1) {
             this.expandPath(expandablePath);
           }
         });
       }
     },
-    async text() {
+    filter() {
+      this.refreshJsonCache();
+    },
+    value() {
+      this.refreshJsonCache();
+    },
+    restoredTruncatedPaths() {
+      this.refreshJsonCache();
+    },
+    editablePaths() {
+      this.scheduleSourceMapBuild();
+    },
+    async cachedJson(newText, oldText) {
+      if (this.skipFoldPersist) {
+        this.skipFoldPersist = false;
+        return;
+      }
+      if (!oldText || newText === oldText) {
+        return;
+      }
       this.persistJsonFold.save()
       await this.$nextTick()
       setTimeout(() => this.persistJsonFold.apply())
     },
-    editableRanges() {
-      this.partialReadonly.setEditableRanges(this.editableRanges)
+    cachedEditableRanges(ranges) {
+      this.partialReadonly.setEditableRanges(ranges);
     },
   },
   computed: {
@@ -172,12 +206,6 @@ export default Vue.extend({
     empty() {
       return _.isEmpty(this.value);
     },
-    text() {
-      if (this.hidden || this.empty) {
-        return ""
-      }
-      return this.sourceMap.json
-    },
     debouncedFilter: {
       get() {
         return this.filter;
@@ -186,75 +214,30 @@ export default Vue.extend({
         this.setFilter(value);
       }, 500),
     },
-    sourceMap() {
-      if (this.hidden) {
-        return { json: "", pointers: {} }
-      }
-      // Since JsonSourceMap.stringify doesn't support replacer functions,
-      // we've already applied the replacer in processedValue/filteredValue
-      return JsonSourceMap.stringify(this.filteredValue, null, 2);
-    },
-    filteredValue() {
-      if (this.hidden || this.empty) {
-        return {}
-      }
-      if (!this.filter) {
-        return this.processedValue
-      }
-      return deepFilterObjectProps(this.processedValue, this.filter);
-    },
-    processedValue() {
-      if (this.hidden) {
-        return {}
-      }
-      const clonedValue = _.cloneDeep(this.value)
-      eachPaths(clonedValue, (path, value) => {
-        if (this.truncatedPaths.includes(path)) {
-          _.set(clonedValue, path, (value as string).slice(0, globals.maxDetailViewTextLength))
-        }
-      })
-      
-      // Apply the replacer function to ensure consistency between filtered and unfiltered views
-      // This is necessary because JsonSourceMap.stringify doesn't support replacer functions
-      try {
-        return JSON.parse(JSON.stringify(clonedValue, this.replacer));
-      } catch (error) {
-        log.warn("Failed to apply replacer to processed value", error);
-        return clonedValue;
-      }
-    },
-    truncatablePaths() {
-      if (this.hidden) {
-        return []
-      }
-      return getPaths(this.value).filter((path) => {
-        const val = _.get(this.value, path)
-        if (
-          typeof val === "string" &&
-          val.length > globals.maxDetailViewTextLength
-        ) {
-          return true
-        }
-        return false
-      })
-    },
     truncatedPaths() {
-      return _.difference(this.truncatablePaths, this.restoredTruncatedPaths)
+      return _.difference(this.cachedTruncatablePaths, this.restoredTruncatedPaths)
     },
     markers() {
       const markers: EditorMarker[] = [];
       _.forEach(this.expandablePaths, (expandablePath: ExpandablePath) => {
         try {
-          const line = findKeyPosition(this.text, expandablePath.path);
-          const { from, to, value } = findValueInfo(this.lines[line]);
-          const onClick = () => {
-            this.expandPath(expandablePath);
-          };
+          const pointer = JsonPointer.compile(expandablePath.path.map(String));
+          const range = valueMarkerRange(
+            this.cachedJson,
+            expandablePath.path,
+            this.cachedPointers,
+            pointer
+          );
+          if (!range) {
+            return;
+          }
           markers.push({
             type: "custom",
-            from: { line, ch: from },
-            to: { line, ch: to },
-            decoration: createExpandableTextDecoration(value, onClick),
+            from: { line: range.line, ch: range.from },
+            to: { line: range.line, ch: range.to },
+            decoration: createExpandableTextDecoration(range.value, () => {
+              this.expandPath(expandablePath);
+            }),
           });
         } catch (e) {
           log.warn("Failed to mark expandable path", expandablePath);
@@ -262,21 +245,28 @@ export default Vue.extend({
         }
       });
       _.forEach(this.truncatedPaths, (path) => {
-        // Avoid conflicts with expandable paths
-        if (this.expandablePaths.includes(path)) {
-          return
+        if (this.expandablePaths.some((entry: ExpandablePath) => entry.path.join(".") === path)) {
+          return;
         }
         try {
-          const line = findKeyPosition(this.text, path.split("."));
-          const { from, to, value } = findValueInfo(this.lines[line]);
-          const onClick = async () => {
-            this.restoredTruncatedPaths.push(path)
+          const segments = path.split(".");
+          const pointer = JsonPointer.compile(segments);
+          const range = valueMarkerRange(
+            this.cachedJson,
+            segments,
+            this.cachedPointers,
+            pointer
+          );
+          if (!range) {
+            return;
           }
           markers.push({
             type: "custom",
-            from: { line, ch: from },
-            to: { line, ch: to },
-            decoration: createTruncatableTextDecoration(value, onClick),
+            from: { line: range.line, ch: range.from },
+            to: { line: range.line, ch: range.to },
+            decoration: createTruncatableTextDecoration(range.value, () => {
+              this.restoredTruncatedPaths.push(path);
+            }),
           });
         } catch (e) {
           log.warn("Failed to mark truncated path", path);
@@ -293,14 +283,18 @@ export default Vue.extend({
       })
       return markers;
     },
-    lines() {
-      return this.text?.split("\n") || [];
-    },
     lineGutters() {
       const lineGutters: LineGutter[] = []
       _.forEach(this.signs, (_i, key) => {
         const type = this.signs[key]
-        const line = findKeyPosition(this.text, [key]);
+        const pointer = JsonPointer.compile([key]);
+        const range = valueMarkerRange(
+          this.cachedJson,
+          [key],
+          this.cachedPointers,
+          pointer
+        );
+        const line = range?.line ?? findKeyPosition(this.cachedJson, [key]);
         if (line === -1) {
           log.warn(`Failed to sign key \`${key}\`. \`${key}\` is not found.`)
           return
@@ -310,38 +304,14 @@ export default Vue.extend({
       return lineGutters;
     },
     editableRanges() {
-      const editablePaths = this.editablePaths
-
-      if (_.isEmpty(editablePaths)) {
-        return []
-      }
-
-      const ranges = []
-
-      editablePaths.forEach((path: string) => {
-        const pointer = JsonPointer.compile(path.split("."))
-        const position = this.sourceMap.pointers[pointer]
-
-        if (!position) {
-          log.warn(`Unable to find editable path \`${path}\` in value object.`)
-          return
-        }
-
-        ranges.push({
-          id: path,
-          from: { line: position.value.line, ch: position.value.column },
-          to: { line: position.valueEnd.line, ch: position.valueEnd.column },
-        })
-      })
-
-      return ranges
+      return this.cachedEditableRanges;
     },
     menuOptions() {
       return [
         {
           name: "Copy Visible",
           handler: () => {
-            this.$native.clipboard.writeText(this.text);
+            this.$native.clipboard.writeText(this.cachedJson);
           },
         },
         {
@@ -376,15 +346,109 @@ export default Vue.extend({
     ...mapGetters(["expandFKDetailsByDefault"]),
   },
   methods: {
-    replacer(_key: string, value: unknown) {
-      // HACK: this is the case in mongodb objectid
-      if (value && typeof value === "object" && _.isTypedArray((value as any).buffer)) {
-        return typedArrayToString((value as any).buffer, this.binaryEncoding)
+    buildCacheKey() {
+      return [
+        this.dataId,
+        this.filter,
+        this.restoredTruncatedPaths.join(","),
+        this.binaryEncoding,
+        _.isEmpty(this.editablePaths) ? "0" : "1",
+      ].join("|");
+    },
+    buildFilteredValue() {
+      const truncatedPaths = _.difference(
+        getTruncatablePaths(this.value as Record<string, unknown>),
+        this.restoredTruncatedPaths
+      );
+      const processed = cloneForJsonDisplay(this.value as Record<string, unknown>, {
+        binaryEncoding: this.binaryEncoding as "hex" | "base64" | undefined,
+        truncatedPaths,
+      });
+      if (!this.filter) {
+        return processed;
       }
-      if (_.isTypedArray(value)) {
-        return typedArrayToString(value as ArrayBufferView, this.binaryEncoding)
+      return deepFilterObjectProps(processed, this.filter);
+    },
+    refreshJsonCache() {
+      if (this.hidden || this.empty) {
+        this.cacheKey = "";
+        this.cachedJson = "";
+        this.cachedPointers = {};
+        this.cachedTruncatablePaths = [];
+        this.cachedEditableRanges = [];
+        this.sourceMapGeneration++;
+        return;
       }
-      return value
+
+      const cacheKey = this.buildCacheKey();
+      if (cacheKey === this.cacheKey) {
+        return;
+      }
+
+      this.cacheKey = cacheKey;
+      this.cachedTruncatablePaths = getTruncatablePaths(this.value as Record<string, unknown>);
+
+      const filteredValue = this.buildFilteredValue();
+      this.cachedJson = JSON.stringify(filteredValue, null, 2);
+      this.cachedPointers = {};
+      this.cachedEditableRanges = [];
+      this.scheduleSourceMapBuild(filteredValue);
+    },
+    scheduleSourceMapBuild(filteredValue = this.buildFilteredValue()) {
+      this.sourceMapGeneration++;
+      const generation = this.sourceMapGeneration;
+
+      if (_.isEmpty(this.editablePaths)) {
+        return;
+      }
+
+      const build = () => {
+        if (generation !== this.sourceMapGeneration) {
+          return;
+        }
+
+        try {
+          const sourceMap = JsonSourceMap.stringify(filteredValue, null, 2);
+          if (generation !== this.sourceMapGeneration) {
+            return;
+          }
+          this.cachedPointers = sourceMap.pointers;
+          this.cachedEditableRanges = this.buildEditableRanges(sourceMap.pointers);
+        } catch (error) {
+          log.warn("Failed to build JSON source map for editable ranges", error);
+        }
+      };
+
+      if (typeof requestIdleCallback !== "undefined") {
+        requestIdleCallback(build);
+      } else {
+        setTimeout(build, 0);
+      }
+    },
+    buildEditableRanges(pointers: JsonSourcePointers = this.cachedPointers) {
+      if (_.isEmpty(this.editablePaths) || _.isEmpty(pointers)) {
+        return [];
+      }
+
+      const ranges = [];
+
+      this.editablePaths.forEach((path: string) => {
+        const pointer = JsonPointer.compile(path.split("."));
+        const position = pointers[pointer];
+
+        if (!position) {
+          log.warn(`Unable to find editable path \`${path}\` in value object.`);
+          return;
+        }
+
+        ranges.push({
+          id: path,
+          from: { line: position.value.line, ch: position.value.column },
+          to: { line: position.valueEnd.line, ch: position.valueEnd.column },
+        });
+      });
+
+      return ranges;
     },
     expandPath(path: ExpandablePath) {
       this.$emit("expandPath", path);
@@ -417,6 +481,7 @@ export default Vue.extend({
   },
   mounted() {
     this.partialReadonly.addListener("change", this.handleEditableRangeChange)
+    this.refreshJsonCache();
   },
   beforeDestroy() {
     this.partialReadonly.removeListener("change", this.handleEditableRangeChange)
