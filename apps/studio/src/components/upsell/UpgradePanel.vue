@@ -88,7 +88,7 @@
 <script lang="ts">
 import Vue from 'vue'
 import UpsellButtons from './common/UpsellButtons.vue'
-import logoUrl from '@/assets/logo.svg'
+import logoUrl from '@/assets/logo.png'
 
 const UPGRADE_URL = 'https://www.beekeeperstudio.io/upgrade'
 

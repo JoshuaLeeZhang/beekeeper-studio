@@ -5,7 +5,7 @@
 import Vue from 'vue'
 import Noty from 'noty'
 import { mapGetters, mapActions, mapState } from 'vuex'
-import logoUrl from '@/assets/logo.svg'
+import logoUrl from '@/assets/logo.png'
 
 export default Vue.extend({
   data: () => {
