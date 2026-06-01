@@ -251,6 +251,7 @@ import { stringToTypedArray } from '@/common/utils'
       rootBindings() {
         return [
           { event: AppEvent.switchedTab, handler: this.handleSwitchedTab },
+          { event: AppEvent.toggleSecondarySidebar, handler: this.handleToggleSecondarySidebar },
         ]
       },
     },
@@ -1091,6 +1092,10 @@ import { stringToTypedArray } from '@/common/utils'
         this.tabulator.rowManager.getElement().focus();
       },
       updateJsonViewerSidebar() {
+        if (!this.$store.state.sidebar.secondarySidebarOpen) {
+          return
+        }
+
         /** @type {import('@/lib/data/jsonViewer').UpdateOptions} */
         const data = {
           dataId: this.selectedRowId,
@@ -1103,13 +1108,33 @@ import { stringToTypedArray } from '@/common/utils'
       },
       handleRangeChange(ranges) {
         const row = ranges[0].getRows()[0];
+        this.selectedRowPosition = row.getPosition()
+
+        if (!this.$store.state.sidebar.secondarySidebarOpen) {
+          return
+        }
+
         const parsedData = parseRowDataForJsonViewer(row.getData(), this.tableColumns)
         this.selectedRowData = this.dataToJson(parsedData, true)
-        this.selectedRowPosition = row.getPosition()
         this.updateJsonViewerSidebar()
       },
       handleTabActive() {
-        this.updateJsonViewerSidebar()
+        if (!this.$store.state.sidebar.secondarySidebarOpen || !this.tabulator) {
+          return
+        }
+
+        const ranges = this.tabulator.getRanges()
+        if (ranges.length) {
+          this.handleRangeChange(ranges)
+        }
+      },
+      handleToggleSecondarySidebar(open) {
+        if (open && this.active && this.tabulator) {
+          const ranges = this.tabulator.getRanges()
+          if (ranges.length) {
+            this.handleRangeChange(ranges)
+          }
+        }
       },
       handleSwitchedTab(tab) {
         if (tab.id === this.tab.id) {

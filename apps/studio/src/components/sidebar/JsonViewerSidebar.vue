@@ -4,7 +4,7 @@
       :value="value"
       :filter="filter"
       :data-id="dataId"
-      :hidden="hidden"
+      :hidden="!secondarySidebarOpen"
       :expandable-paths="expandablePaths"
       :reinitialize="reinitializeJsonViewer"
       :signs="signs"
@@ -47,6 +47,7 @@ export default Vue.extend({
 
   computed: {
     ...mapState('tabs', { 'activeTab': 'active' }),
+    ...mapState('sidebar', ['secondarySidebarOpen']),
     jsonViewerTitle() {
       return "JSON Viewer";
     },
@@ -102,6 +103,9 @@ export default Vue.extend({
     },
 
     update(options: UpdateOptions) {
+      if (!this.secondarySidebarOpen) {
+        return
+      }
       this.dataId = options.dataId
       this.value = options.value ?? ''
       this.expandablePaths = options.expandablePaths

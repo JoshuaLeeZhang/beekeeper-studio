@@ -42,14 +42,19 @@ function yesNoResult(value: boolean) {
 
 export default {
   niceString(value: any, truncate = false, binaryEncoding?: 'hex' | 'base64') {
-    let cellValue = value.toString();
+    let cellValue: string
+
     if (_.isTypedArray(value)) {
       cellValue = typedArrayToString(value, binaryEncoding)
     } else if (_.isTypedArray(value?.buffer)) { // HACK: mongodb sends buffer this way
       cellValue = typedArrayToString(value.buffer, binaryEncoding)
     } else if (_.isArray(value) || _.isObject(value)) {
-      cellValue = JSON.stringify(value)
+      // jsonMutator adds a toString() that fully stringifies the document.
+      cellValue = truncate ? (_.isArray(value) ? '[...]' : '{...}') : JSON.stringify(value)
+    } else {
+      cellValue = value?.toString?.() ?? String(value)
     }
+
     return truncate ? _.truncate(cellValue, { length: 256 }) : cellValue
   },
   cellFormatter(cell: CellComponent) {

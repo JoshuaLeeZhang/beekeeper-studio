@@ -619,6 +619,7 @@ export default Vue.extend({
     rootBindings() {
       return [
         { event: AppEvent.switchedTab, handler: this.handleSwitchedTab },
+        { event: AppEvent.toggleSecondarySidebar, handler: this.handleToggleSecondarySidebar },
       ]
     },
     /** This tells which fields have been modified */
@@ -2005,14 +2006,19 @@ export default Vue.extend({
       }
       const position = this.positionRowOf(row)
       const data = row.getData("withForeignData")
-      const cachedExpandablePaths = row.getExpandablePaths()
       this.selectedRow = row
+      this.selectedRowPosition = position
+      this.selectedRowIndex = this.primaryKeys?.map((key: string) => data[key]).join(',');
+
+      if (!this.$store.state.sidebar.secondarySidebarOpen) {
+        return
+      }
+
+      const cachedExpandablePaths = row.getExpandablePaths()
 
       // Clean the data first
       let cleanedData = this.$bks.cleanData(data, this.tableColumns)
 
-      this.selectedRowPosition = position
-      this.selectedRowIndex = this.primaryKeys?.map((key: string) => data[key]).join(',');
       this.selectedRowData = parseRowDataForJsonViewer(cleanedData, this.tableColumns)
       this.expandablePaths = this.rawTableKeys
         .filter((key) => !row.hasForeignData([key.fromColumn]))
@@ -2024,6 +2030,10 @@ export default Vue.extend({
       this.updateJsonViewerSidebar()
     },
     updateJsonViewerSidebar() {
+      if (!this.$store.state.sidebar.secondarySidebarOpen) {
+        return
+      }
+
       const updatedData: UpdateOptions = {
         dataId: this.selectedRowIndex,
         value: this.selectedRowData,
@@ -2136,6 +2146,11 @@ export default Vue.extend({
     handleRangeChange(ranges: RangeComponent[]) {
       this.updateJsonViewer({ range: ranges[0] })
     },
+    handleToggleSecondarySidebar(open: boolean) {
+      if (open && this.active) {
+        this.updateJsonViewer()
+      }
+    },
     handleSwitchedTab(tab) {
       if (tab === this.tab) {
         this.handleTabActive()
@@ -2144,7 +2159,9 @@ export default Vue.extend({
       }
     },
     handleTabActive() {
-      this.updateJsonViewerSidebar()
+      if (this.$store.state.sidebar.secondarySidebarOpen) {
+        this.updateJsonViewer()
+      }
       this.registerHandlers([
         {
           event: AppEvent.jsonViewerSidebarExpandPath,

@@ -63,7 +63,6 @@
     <div class="empty-text">
       Open a table to view its data
     </div>
-    <json-viewer-upsell v-if="$store.getters.isCommunity" />
   </div>
 </template>
 
@@ -89,7 +88,6 @@ import { mapGetters } from "vuex";
 import { EditorMarker, LineGutter } from "@beekeeperstudio/ui-kit";
 import { persistJsonFold } from "@/lib/editor/extensions/persistJsonFold";
 import { partialReadonly } from "@/lib/editor/extensions/partialReadOnly";
-import JsonViewerUpsell from '@/components/upsell/JsonViewerSidebarUpsell.vue'
 import rawLog from "@bksLogger";
 import _ from "lodash";
 import globals from '@/common/globals'
@@ -101,7 +99,7 @@ import { monokaiInit } from "@uiw/codemirror-theme-monokai";
 const log = rawLog.scope("json-viewer");
 
 export default Vue.extend({
-  components: { TextEditor, JsonViewerUpsell },
+  components: { TextEditor },
   props: {
     value: {
       type: [Object, Array],
@@ -175,7 +173,7 @@ export default Vue.extend({
       return _.isEmpty(this.value);
     },
     text() {
-      if (this.empty) {
+      if (this.hidden || this.empty) {
         return ""
       }
       return this.sourceMap.json
@@ -189,12 +187,15 @@ export default Vue.extend({
       }, 500),
     },
     sourceMap() {
+      if (this.hidden) {
+        return { json: "", pointers: {} }
+      }
       // Since JsonSourceMap.stringify doesn't support replacer functions,
       // we've already applied the replacer in processedValue/filteredValue
       return JsonSourceMap.stringify(this.filteredValue, null, 2);
     },
     filteredValue() {
-      if (this.empty) {
+      if (this.hidden || this.empty) {
         return {}
       }
       if (!this.filter) {
@@ -203,6 +204,9 @@ export default Vue.extend({
       return deepFilterObjectProps(this.processedValue, this.filter);
     },
     processedValue() {
+      if (this.hidden) {
+        return {}
+      }
       const clonedValue = _.cloneDeep(this.value)
       eachPaths(clonedValue, (path, value) => {
         if (this.truncatedPaths.includes(path)) {
@@ -220,6 +224,9 @@ export default Vue.extend({
       }
     },
     truncatablePaths() {
+      if (this.hidden) {
+        return []
+      }
       return getPaths(this.value).filter((path) => {
         const val = _.get(this.value, path)
         if (
